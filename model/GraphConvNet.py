@@ -34,13 +34,24 @@ class GCN(nn.Module):
             self.fcl_0 = self.fcl_0.cuda()
             self.fcl_1 = self.fcl_1.cuda()
 
-    def forward(self, X):
-        a = self.adj
+    def forward(self, X, A, D):
+        """
+            s: binibatch size
+            p: number of nodal features
+            n: number of nodes in network
 
-        G_0 = torch.mm(a, X)  # conv 1
+        :param X: (torch.tensor) Nodal Feature Tensor - shape (s x p)
+        :param A: (torch.tensor) Adjacency + Identity - shape (s x n)
+        :param D: (torch.tensor) Inverted Degree Matrix - shape (s x n)
+        :return:
+        """
+        # D^-1 * A'
+        graph_conv = torch.mm(D, torch.transpose(A, 0, 1))
+
+        G_0 = torch.mm(graph_conv, X)  # conv 1
         G_0 = self.fcl_0(G_0)  # linear layer 1
         H_0 = F.relu(G_0)
-        x = torch.mm(a, H_0)  # conv 2
+        x = torch.mm(graph_conv, H_0)  # conv 2
         return self.fcl_1(x)  # output layer
 
     def get_optimizer(self, lr):
@@ -71,9 +82,10 @@ class GCN(nn.Module):
 
     @staticmethod
     def preprocess_degree(D):
-        # get D^-1/2
+        # get D^-1
         D = np.linalg.inv(D)
-        D = np.power(D, .5)
+
+        #D = np.power(D, .5)
 
         return D
 
@@ -108,28 +120,30 @@ class GCN(nn.Module):
         return neg_samples, neg_sample_probs
 
     @staticmethod
-    def gen_skip_gram_samples(context_size, n_neg_samples, h_graph, batch_size, idx_map, regions, adj_mtx, degree):
+    def gen_skip_gram_samples(batch_idx, context_size, n_neg_samples, H_graph, coor_map, idx_map, regions, adj_mtx, degree):
         # generate context (positive samples) and negative sampples for each sample
-        n_h_dims = h_graph.shape[1]
+        n_h_dims = H_graph.shape[1]
+        n_nodes = adj_mtx.shape[0]
+        batch_size = len(batch_idx)
         pos_samples = torch.zeros((batch_size, context_size, n_h_dims), dtype=torch.float)
         neg_samples = torch.zeros((batch_size, context_size, n_neg_samples, n_h_dims), dtype=torch.float)
         sampled_probs = torch.zeros((batch_size, context_size,  n_neg_samples), dtype=torch.float)
 
-        for id, mtx_idx in idx_map.items():
+        for i, mtx_idx in enumerate(batch_idx):
 
+            id = coor_map[i]
             # create context by sampling adjacent nodes WITH REPLACEMENT
             adj_nodes = list(regions[id].adjacent.keys())
             context = np.random.choice(adj_nodes, replace=True, size=context_size)
             for c in range(context_size):
-                pos_samples[mtx_idx, c, :] = h_graph[idx_map[context[c]], :]
+                pos_samples[i, c, :] = H_graph[idx_map[context[c]], :]
 
                 probs = GCN.get_neg_sample_distribution(degree, adj_mtx[mtx_idx, :])
-                neg_samples_idx = np.random.choice(np.arange(0, batch_size), p=probs, size=n_neg_samples)
+                neg_samples_idx = np.random.choice(np.arange(0, n_nodes), p=probs, size=n_neg_samples)
                 for k in range(n_neg_samples):
                     # insert embedding vector to tensor via id lookup
-
-                    neg_samples[mtx_idx, c, k, :] = h_graph[neg_samples_idx[k], :]
-                    sampled_probs[mtx_idx, c, k] = probs[neg_samples_idx[k]]
+                    neg_samples[i, c, k, :] = H_graph[neg_samples_idx[k], :]
+                    sampled_probs[i, c, k] = probs[neg_samples_idx[k]]
 
         return pos_samples, neg_samples, sampled_probs
 

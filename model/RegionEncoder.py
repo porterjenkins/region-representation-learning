@@ -42,12 +42,14 @@ class RegionEncoder(nn.Module):
 
         # Sampling parameters
         if neg_samples_disc is None:
-            self.neg_samples_disc = n_nodes
+            self.neg_samples_disc = batch_size
         else:
             self.neg_samples_disc = neg_samples_disc
         self.neg_samples_gcn = neg_samples_gcn
         self.context_gcn = context_gcn
         self.n_nodes = n_nodes
+        self.h_dim_size = h_dim_size
+        self.h_dim_graph = h_dim_graph
 
 
         # Final model hidden state
@@ -60,17 +62,17 @@ class RegionEncoder(nn.Module):
         self.loss_seq_ae = []
         self.use_cuda = torch.cuda.is_available()
 
-    def forward(self, X, img_tensor):
+    def forward(self, X, A, D, img_tensor, batch_size):
 
         # Forward step for graph data
-        h_graph = self.graph_conv_net.forward(X)
+        h_graph = self.graph_conv_net.forward(X, A, D)
         graph_proximity = GCN.get_weighted_proximity(h_graph)
 
         # Forward step for image data
         image_hat, h_image = self.auto_encoder.forward(img_tensor)
 
         # generate negative samples for discriminator
-        h_graph_neg, h_img_neg = self.__gen_neg_samples_disc(h_graph, h_image)
+        h_graph_neg, h_img_neg = self.__gen_neg_samples_disc(batch_size, h_graph, h_image)
 
         # concat positive and negatives samples for discriminator
         h_graph_cat = torch.cat([h_graph, h_graph_neg], dim=0)
@@ -129,8 +131,8 @@ class RegionEncoder(nn.Module):
             eta = eta.cuda()
         return eta
 
-    def __gen_neg_samples_disc(self, h_graph, h_image):
-        idx = np.arange(self.n_nodes)
+    def __gen_neg_samples_disc(self, batch_size, h_graph, h_image):
+        idx = np.arange(batch_size)
 
         neg_idx_graph = np.random.choice(idx, size=self.neg_samples_disc, replace=True)
         neg_idx_image = np.random.choice(idx, size=self.neg_samples_disc, replace=True)
@@ -141,7 +143,7 @@ class RegionEncoder(nn.Module):
         # resample until they are true negative samples
         for i in graph_equal_img:
             while neg_idx_graph[i] == neg_idx_image[i]:
-                new_idx = np.random.randint(0, self.n_nodes)
+                new_idx = np.random.randint(0, batch_size)
                 neg_idx_graph[i] = new_idx
 
         h_graph_neg = h_graph[neg_idx_graph, :]
@@ -211,8 +213,6 @@ class RegionEncoder(nn.Module):
 
         optimizer = self.get_optimizer(lr=lr)
 
-        region_mtx_map = region_grid.matrix_idx_map
-
         A = region_grid.adj_matrix
         D = region_grid.degree_matrix
         W = region_grid.weighted_mtx
@@ -232,8 +232,12 @@ class RegionEncoder(nn.Module):
         #batch_size = A.shape[0]
         print("Beginning training job: epochs: {}, batch size: {}, learning rate:{}".format(epochs, batch_size,
                                                                                             lr))
+        n_samples = region_grid.n_regions
 
-        self.graph_conv_net.adj = torch.mm(D_hat, torch.mm(A_hat, D_hat))
+        # maintain tensor of ALL region representations -- update in batches
+        H_global = torch.rand((self.n_nodes, self.h_dim_size))
+        H_graph = torch.rand((self.n_nodes, self.h_dim_graph))
+
         if self.use_cuda:
             self.graph_conv_net.adj = self.graph_conv_net.adj.cuda()
             X = X.cuda()
@@ -242,54 +246,76 @@ class RegionEncoder(nn.Module):
 
         for i in range(epochs):
 
-            optimizer.zero_grad()
-            # forward + backward + optimize
-            logits, h_global, image_hat, graph_proximity, h_graph, h_image, h_graph_neg, \
-            h_image_neg = self.forward(X=X, img_tensor=img_tensor)
+            data_idx = np.random.permutation(np.arange(n_samples))
 
-            # Generate context (positive samples) and negative samples for SkipGram Loss
-            gcn_pos_samples, gcn_neg_samples, neg_probs = GCN.gen_skip_gram_samples(self.context_gcn, self.neg_samples_gcn,
-                                                                                    h_graph, batch_size, region_mtx_map,
-                                                                                    region_grid.regions, A, D)
+            for step in range(n_samples // batch_size):
 
-            # get labels for discriminator
-            eta = self.__gen_eta(pos_tens=h_graph, neg_tens=h_graph_neg)
-            # Add noise to images
-            img_noisey = AutoEncoder.add_noise(img_tensor, noise_factor=.25, cuda=self.use_cuda)
+                optimizer.zero_grad()
 
-            # Get different objectives
-            L_graph = GCN.skip_gram_loss(h_graph, gcn_pos_samples, gcn_neg_samples, neg_probs)
-            emp_proximity = W / torch.sum(W)
-            L_edge_weights = GCN.loss_weighted_edges(graph_proximity, emp_proximity)
-            L_disc = self.loss_disc(eta, logits)
-            L_ae = AutoEncoder.loss_mse(img_noisey, image_hat)
+                start_idx = step * batch_size
+                end_idx = step * batch_size + batch_size
+                batch_idx = data_idx[start_idx:end_idx]
 
-            # regularize weights
-            weight_decay = self.weight_decay()
-            loss = self.loss_function(L_graph, L_edge_weights, L_disc, L_ae, weight_decay)
-            loss.backward()
-            optimizer.step()
 
-            # store loss values for learning curve
-            self.loss_seq.append(loss.item())
-            self.loss_seq_gcn.append(self.lambda_g * L_graph.item())
-            self.loss_seq_edge.append(self.lambda_edge * L_edge_weights.item())
-            self.loss_seq_disc.append(L_disc.item())
-            self.loss_seq_ae.append(self.lambda_ae * L_ae.item())
 
-            if np.isnan(self.loss_seq[-1]):
-                print("Exploding/Vanishing gradient: loss = nan")
-                break
-            elif self.__earling_stop(self.loss_seq, tol, tol_order):
-                print(
-                    "Terminating early: Epoch: {}, Train Loss {:.4f} (gcn: {:.4f}, edge: {:.4f}, discriminator: {:.4f}"
-                    " autoencoder: {:.4f})".format(i + 1, self.loss_seq[-1], L_graph, L_edge_weights, L_disc, L_ae))
-                break
-            else:
-                print("Epoch: {}, Train Loss {:.4f} (gcn: {:.4f}, edge: {:.4f}, discriminator: {:.4f}"
-                      " autoencoder: {:.4f})".format(i + 1, self.loss_seq[-1], L_graph, L_edge_weights, L_disc, L_ae))
+                #self.graph_conv_net.adj = torch.mm(D_hat, torch.mm(A_hat, D_hat))
+                # forward + backward + optimize
+                logits, h_global_step, image_hat, graph_proximity, h_graph_step, h_image, h_graph_neg, \
+                h_image_neg = self.forward(X=X[batch_idx, :], A=A_hat[batch_idx, :], D=D_hat[batch_idx, :],
+                                           img_tensor=img_tensor[batch_idx, :, :, :], batch_size=batch_size)
 
-        self.embedding = h_global
+                # Update Graph Representations
+                H_graph[batch_idx, :] = h_graph_step
+
+
+                # Generate context (positive samples) and negative samples for SkipGram Loss
+                gcn_pos_samples, gcn_neg_samples, neg_probs = GCN.gen_skip_gram_samples(batch_idx, self.context_gcn, self.neg_samples_gcn,
+                                                                                        H_graph, region_grid.idx_coor_map,
+                                                                                        region_grid.matrix_idx_map,
+                                                                                        region_grid.regions, A, D)
+
+                # get labels for discriminator
+                eta = self.__gen_eta(pos_tens=h_graph_step, neg_tens=h_graph_neg)
+                # Add noise to images
+                img_noisey = AutoEncoder.add_noise(img_tensor[batch_idx, :, :, :], noise_factor=.25, cuda=self.use_cuda)
+
+                # Get different objectives
+                L_graph = GCN.skip_gram_loss(h_graph_step, gcn_pos_samples, gcn_neg_samples, neg_probs)
+                emp_proximity = W / torch.sum(W)
+                L_edge_weights = GCN.loss_weighted_edges(graph_proximity, emp_proximity)
+                L_disc = self.loss_disc(eta, logits)
+                L_ae = AutoEncoder.loss_mse(img_tensor[batch_idx, :, :, :], image_hat)
+
+                # regularize weights
+                weight_decay = self.weight_decay()
+                loss = self.loss_function(L_graph, L_edge_weights, L_disc, L_ae, weight_decay)
+                loss.backward()
+                optimizer.step()
+
+                # store loss values for learning curve
+                self.loss_seq.append(loss.item())
+                self.loss_seq_gcn.append(self.lambda_g * L_graph.item())
+                self.loss_seq_edge.append(self.lambda_edge * L_edge_weights.item())
+                self.loss_seq_disc.append(L_disc.item())
+                self.loss_seq_ae.append(self.lambda_ae * L_ae.item())
+
+
+                # update global region representations
+                H_global[batch_idx, :] = h_global_step[:batch_size, :]
+
+                if np.isnan(self.loss_seq[-1]):
+                    print("Exploding/Vanishing gradient: loss = nan")
+                    break
+                elif self.__earling_stop(self.loss_seq, tol, tol_order):
+                    print(
+                        "Terminating early: Epoch: {}, Train Loss {:.4f} (gcn: {:.4f}, edge: {:.4f}, discriminator: {:.4f}"
+                        " autoencoder: {:.4f})".format(i + 1, self.loss_seq[-1], L_graph, L_edge_weights, L_disc, L_ae))
+                    break
+                else:
+                    print("Epoch: {}, Train Loss {:.4f} (gcn: {:.4f}, edge: {:.4f}, discriminator: {:.4f}"
+                          " autoencoder: {:.4f})".format(i + 1, self.loss_seq[-1], L_graph, L_edge_weights, L_disc, L_ae))
+
+        self.embedding = H_global
 
 
 if __name__ == "__main__":
@@ -309,6 +335,7 @@ if __name__ == "__main__":
     epochs = 50
     learning_rate = .1
     h_dim_size = int(c['hidden_dim_size'])
+    batch_size = 12
 
     if len(sys.argv) > 1:
         epochs = int(sys.argv[1])
@@ -322,7 +349,7 @@ if __name__ == "__main__":
                         lambda_g=lambda_g,
                         neg_samples_gcn=neg_samples_gcn,
                         h_dim_size=h_dim_size)
-    mod.run_train_job(region_grid, epochs=epochs, lr=learning_rate, tol_order=3)
+    mod.run_train_job(region_grid, epochs=epochs, batch_size=batch_size, lr=learning_rate, tol_order=3)
 
     write_embeddings(arr=mod.embedding.data.numpy(), n_nodes=n_nodes, fname=c['embedding_file'])
     mod.plt_learning_curve("plots/region-learning-curve.pdf", plt_all=False, log_scale=True)
