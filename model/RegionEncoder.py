@@ -207,7 +207,7 @@ class RegionEncoder(nn.Module):
         else:
             return False
 
-    def run_train_job(self, region_grid, epochs, lr, tol=.001, tol_order=5):
+    def run_train_job(self, region_grid, batch_size, epochs, lr, tol=.001, tol_order=5):
 
         optimizer = self.get_optimizer(lr=lr)
 
@@ -229,7 +229,7 @@ class RegionEncoder(nn.Module):
 
         img_tensor = torch.Tensor(region_grid.img_tensor)
 
-        batch_size = A.shape[0]
+        #batch_size = A.shape[0]
         print("Beginning training job: epochs: {}, batch size: {}, learning rate:{}".format(epochs, batch_size,
                                                                                             lr))
 
