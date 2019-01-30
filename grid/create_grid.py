@@ -4,6 +4,8 @@ import pickle
 import random
 import sys
 # this should add files properly
+from datetime import datetime
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import get_config
 import numpy
@@ -12,10 +14,8 @@ from geopy.distance import distance
 from scipy import ndimage
 from scipy.spatial.distance import euclidean
 
-
 logging.basicConfig(filename='region.log', filemode='w', level=logging.INFO,
                     format='%(asctime)s %(message)s')
-
 
 
 class RegionGrid:
@@ -181,7 +181,7 @@ class RegionGrid:
         df['region_coor'] = reg_coor
         return df
 
-    def load_img_data(self, img_dims=(50,50), std_img=True):
+    def load_img_data(self, img_dims=(50, 50), std_img=True):
 
         idx_cntr = 0
         # init image tensor: n_samples x n_channels x n_rows x n_cols
@@ -388,7 +388,7 @@ class RegionGrid:
 
         return "{},{}".format(x_idx, y_idx)
 
-    def create_flow_matrix(self, fname, n_rows=None, region_name='chicago'):
+    def create_flow_matrix(self, fname, n_rows=None, region_name='chicago', time=None):
         """
         Generated a weighted matrix (dims: n_regions x n_regions) from taxi flow data
          (https://data.cityofchicago.org/Transportation/Taxi-Trips/wrvz-psew)
@@ -396,23 +396,29 @@ class RegionGrid:
 
         :param fname: (str) file name to query for taxi flow
         :param n_rows: (int) optional: only take first n rows from file
+        :param time: (int) create the time flow matrix alongside the flow matrix with the dim size of time
         :return: (np.array) 2-d weighted flow matrix
         """
         # approx 99M rows
         # row_total = 99e6
 
         flow_matrix = numpy.zeros((self.n_regions, self.n_regions))
+        if time:
+            t_flow_matrix = numpy.zeros((self.n_regions, self.n_regions, 8))
         # index given by chicago data portal docs
         if region_name == 'chicago':
             drop_lat_idx = 20
             drop_lon_idx = 21
             pickup_lat_idx = 17
             pickup_lon_idx = 18
+            ts_end = 3
         elif region_name == 'nyc':
             drop_lat_idx = 10
             drop_lon_idx = 9
             pickup_lat_idx = 6
             pickup_lon_idx = 5
+            # todo verify
+            ts_end = 3
         else:
             raise NotImplementedError("Taxi trajectory parsing only implemented for 'chicago' and 'nyc'")
 
@@ -444,6 +450,8 @@ class RegionGrid:
 
                             flow_matrix[p_idx, d_idx] += 1.0
                             sample_cnt += 1
+                            if time:
+                                t_flow_matrix[p_idx][d_idx][RegionGrid.get_time_bucket(data[ts_end])] += 1
 
                             if sample_cnt % 100 == 0:
                                 print("{}, {} --> {}".format(sample_cnt, trip_pickup, trip_drop),
@@ -457,8 +465,20 @@ class RegionGrid:
                             pass
 
                 row_cntr += 1
-
+        if time:
+            return flow_matrix, t_flow_matrix
         return flow_matrix
+
+    @staticmethod
+    def get_time_bucket(timestamp, max_bucket=8):
+        b = int(
+            datetime.strftime(datetime.strptime(timestamp.strip(), '%m/%d/%Y %I:%M:%S %p'), "%H")
+        )
+        num_p_bucket = 24 / max_bucket
+        import math
+        x = math.floor(b / num_p_bucket)
+        print(f"time {b} to bucket {x}")
+        return int(x)
 
     def get_mtx(self, fname):
         with open(fname, 'rb') as f:
@@ -495,13 +515,14 @@ class RegionGrid:
         else:
             raise NotImplementedError("Only 'house_price' is currently implemented")
 
-    def get_distance_mtx(self, metric='euclidean'):
+    def get_distance_mtx(self, metric='euclidean', transform=None):
         """
         Get pairwise distance matrix of all regions. Default metric is euclidean distance between
             region_i and region_j
         First an upper-triangular matrix for effeciency, then transpose and copy to get full symmetric matrix
 
         :param metric:
+        :param transform function
         :return: (np.array) Upper-triangular matrix of spatial distances
         """
         print("Creating distance matrix -- metric = {}".format(metric))
@@ -520,6 +541,8 @@ class RegionGrid:
                 if metric == 'euclidean':
                     try:
                         dist = euclidean(r_i.mid_point, r_j.mid_point)
+                        if transform is not None:
+                            dist = transform(dist)
                     except ValueError:
                         dist = numpy.nan
                 else:
@@ -577,9 +600,6 @@ class RegionGrid:
                 adj_list = numpy.where(row > 0.0)[0].astype(numpy.int32)
                 for j, neighbor in enumerate(adj_list):
                     f.write("{} {}\n".format(str(i), str(neighbor)))
-
-
-
 
 
 class Region:
@@ -702,7 +722,7 @@ def get_images_for_grid(region_grid, clear_dir=False, compress=True):
     from image.image_retrieval import get_images_for_all_no_marker, compress_images
     get_images_for_all_no_marker(region_grid, clear_dir=clear_dir)
     if compress:
-        compress_images(region_grid.img_dir, resize=(50,50))
+        compress_images(region_grid.img_dir, resize=(50, 50))
 
 
 if __name__ == '__main__':
@@ -730,4 +750,3 @@ if __name__ == '__main__':
     print(y_house)
 
     # print(I)
-
