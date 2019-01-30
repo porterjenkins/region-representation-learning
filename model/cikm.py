@@ -14,6 +14,7 @@ logging.basicConfig(filename='region.log', filemode='w', level=logging.INFO,
 
 
 def random_walk_distance(m, high, n_walks=10000, walk_length=8):
+    print("Starting D Walk")
     walks = []
     for walk_num in range(0, n_walks):
         # get starting vertex
@@ -21,6 +22,7 @@ def random_walk_distance(m, high, n_walks=10000, walk_length=8):
 
         walk_sequence = []
         for i in range(0, walk_length):
+            print(f"Walk {walk_num} - Step {i}")
             # start walk
             # sum of all distances
             distances = m[v]
@@ -36,14 +38,15 @@ def random_walk_distance(m, high, n_walks=10000, walk_length=8):
     return walks
 
 
-def random_walk_time(m, high, n_walks=10000, walk_length=8):
+def random_walk_time(m, source_v, n_walks=10000, walk_length=8):
+    print("Starting T Walk")
     walks = []
     for walk_num in range(0, n_walks):
         # get starting vertex
-        v = numpy.random.randint(low=0, high=high, size=1)[0]
-
+        v = numpy.random.choice(size=1, a=source_v)[0]
         walk_sequence = []
         for i in range(0, walk_length):
+            print(f"Walk {walk_num} - Step {i}")
             # start walk
             # total counts for each time bucket
             sums = m[v].sum(axis=1)
@@ -62,6 +65,9 @@ c = get_config()
 # init region
 region_grid = RegionGrid(config=c)
 
+walk_length = 8
+n_walks = 10000
+
 
 def e_distance(d):
     import math
@@ -70,19 +76,26 @@ def e_distance(d):
 
 distance_matrix = region_grid.get_distance_mtx(transform=e_distance)
 
-W, t = region_grid.create_flow_matrix(c['raw_flow_file'], region_name=c['city_name'], time=8)
+W, t, sources, ends = region_grid.create_flow_matrix(c['raw_flow_file'], region_name=c['city_name'], time=8, sources=True)
 
 size = region_grid.grid_size * region_grid.grid_size
 
-distance_sequences = random_walk_distance(distance_matrix, size)
-time_sequences = random_walk_time(t, size)
+distance_sequences = random_walk_distance(distance_matrix, high=size, walk_length=walk_length, n_walks=n_walks)
+time_sequences = random_walk_time(t, source_v=sources, walk_length=walk_length, n_walks=n_walks)
 
+print("Sequences Created")
 sequences = []
+for r in region_grid.matrix_idx_map.values():
+    # add identity sequence if the region is never seen
+    if r not in sources.union(ends):
+        sequences.append(" ".join([idx for idx in str(r) * walk_length]))
+
 for seq in distance_sequences + time_sequences:
-    sequences.append(" ".join([str(id) for id in seq]))
+    s = " ".join([str(id) for id in seq])
+    print(s + "\n")
+    sequences.append(s)
 
-print(sequences)
-
+print(f"Sequence Count {len(sequences)}")
 # each sequence is the walk from region idx to the other
 
 model = gensim.models.Word2Vec(
@@ -91,7 +104,7 @@ model = gensim.models.Word2Vec(
     window=8,  # walk length
     min_count=2,
     negative=5,
-    workers=4  # number of cores on machine
+    workers=8  # number of cores on machine
 )
 
 model.train(sequences, total_examples=len(sequences), epochs=10)

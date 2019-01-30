@@ -416,7 +416,7 @@ class RegionGrid:
 
         return "{},{}".format(x_idx, y_idx)
 
-    def create_flow_matrix(self, fname, n_rows=None, region_name='chicago', time=None, sample=False, p=.05):
+    def create_flow_matrix(self, fname, n_rows=None, region_name='chicago', time=None, sources=False, sample=False, p=.05):
         """
         Generated a weighted matrix (dims: n_regions x n_regions) from taxi flow data
          (https://data.cityofchicago.org/Transportation/Taxi-Trips/wrvz-psew)
@@ -433,6 +433,8 @@ class RegionGrid:
         flow_matrix = numpy.zeros((self.n_regions, self.n_regions))
         if time:
             t_flow_matrix = numpy.zeros((self.n_regions, self.n_regions, 8))
+            source_regions = set()
+            end_regions = set()
         # index given by chicago data portal docs
         if region_name == 'chicago':
             drop_lat_idx = 20
@@ -495,7 +497,8 @@ class RegionGrid:
                             sample_cnt += 1
                             if time:
                                 t_flow_matrix[p_idx][d_idx][RegionGrid.get_time_bucket(data[ts_end])] += 1
-
+                                source_regions.add(p_idx)
+                                end_regions.add(d_idx)
                             if sample_cnt % 100 == 0:
                                 print("{}, {} --> {}".format(sample_cnt, trip_pickup, trip_drop),
                                       end="\r")
@@ -521,6 +524,8 @@ class RegionGrid:
 
                 row_cntr += 1
         if time:
+            if sources:
+                return flow_matrix, t_flow_matrix, source_regions, end_regions
             return flow_matrix, t_flow_matrix
         return flow_matrix
 
