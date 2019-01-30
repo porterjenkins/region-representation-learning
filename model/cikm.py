@@ -43,7 +43,7 @@ def random_walk_time(m, source_v, n_walks=10000, walk_length=8):
     walks = []
     for walk_num in range(0, n_walks):
         # get starting vertex
-        v = numpy.random.choice(size=1, a=source_v)[0]
+        v = numpy.random.choice(size=1, a=list(source_v))[0]
         walk_sequence = []
         for i in range(0, walk_length):
             print(f"Walk {walk_num} - Step {i}")
