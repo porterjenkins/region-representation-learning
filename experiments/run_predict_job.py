@@ -54,6 +54,7 @@ if task == 'house_price':
     joint_ae_dw = HousePriceModel(region_grid.idx_coor_map, c, n_epochs, c['deepwalk_file'],
                                   c['autoencoder_embedding_file'])
     #tile2vec_mod = HousePriceModel(region_grid.idx_coor_map, c, n_epochs, c['tile2vec_file'])
+    msne_mod = HousePriceModel(region_grid.idx_coor_map, c, n_epochs, c['msne_file'])
 
 elif task == 'traffic':
     input_data = region_grid.load_traffic_data(c['traffic_data_file'])
@@ -73,6 +74,7 @@ elif task == 'traffic':
     tile2vec_mod = TrafficVolumeModel(region_grid.idx_coor_map, c, n_epochs, c['tile2vec_file'])
     joint_ae_dw = TrafficVolumeModel(region_grid.idx_coor_map, c, n_epochs, c['deepwalk_file'],
                                   c['autoencoder_embedding_file'])
+    msne_mod = TrafficVolumeModel(region_grid.idx_coor_map, c, n_epochs, c['msne_file'])
 
 
 else:
@@ -93,6 +95,7 @@ pca_mod.get_features(input_data)
 autoencoder_mod.get_features(input_data)
 joint_ae_dw.get_features(input_data)
 #tile2vec_mod.get_features(input_data)
+msne_mod.get_features(input_data)
 
 k_fold = KFold(n_splits=n_folds, shuffle=True, random_state=1990)
 
@@ -107,6 +110,7 @@ pca_err = np.zeros((n_folds, 2))
 ae_err = np.zeros((n_folds, 2))
 ae_dw_err = np.zeros((n_folds, 2))
 tile2vec_err = np.zeros((n_folds, 2))
+msne_err = np.zeros((n_folds, 2))
 
 
 train_ind_arr = np.arange(deepwalk_mod.X.shape[0])
@@ -121,7 +125,7 @@ for train_idx, test_idx in k_fold.split(train_ind_arr):
 
     # Naive model w/ raw features
 
-    """rmse, mae = naive_raw_feature_mod.train_eval(train_idx, test_idx, estimator)
+    rmse, mae = naive_raw_feature_mod.train_eval(train_idx, test_idx, estimator)
     raw_features_err[fold_cntr, 0] = rmse
     raw_features_err[fold_cntr, 1] = mae
 
@@ -139,7 +143,7 @@ for train_idx, test_idx in k_fold.split(train_ind_arr):
     # Node2Vec Model
     rmse, mae = node2vec_mod.train_eval(train_idx, test_idx, estimator)
     node2vec_err[fold_cntr, 0] = rmse
-    node2vec_err[fold_cntr, 1] = mae"""
+    node2vec_err[fold_cntr, 1] = mae
 
     # Matrix Factorization Model
     rmse, mae = nmf_mod.train_eval(train_idx, test_idx, estimator)
@@ -148,7 +152,7 @@ for train_idx, test_idx in k_fold.split(train_ind_arr):
 
 
     # RegionEncoder model
-    """rmse, mae = re_mod.train_eval(train_idx, test_idx, estimator)
+    rmse, mae = re_mod.train_eval(train_idx, test_idx, estimator)
     embed_err[fold_cntr, 0] = rmse
     embed_err[fold_cntr, 1] = mae
 
@@ -166,13 +170,17 @@ for train_idx, test_idx in k_fold.split(train_ind_arr):
     # AutoEncoder + DeepWalk
     rmse, mae = joint_ae_dw.train_eval(train_idx, test_idx, estimator)
     ae_dw_err[fold_cntr, 0] = rmse
-    ae_dw_err[fold_cntr, 1] = mae"""
+    ae_dw_err[fold_cntr, 1] = mae
 
     # tile2vec model
     #rmse, mae = tile2vec_mod.train_eval(train_idx, test_idx, estimator)
     #tile2vec_err[fold_cntr, 0] = rmse
     #tile2vec_err[fold_cntr, 1] = mae
 
+    # msne model
+    rmse, mae = msne_mod.train_eval(train_idx, test_idx, estimator)
+    msne_err[fold_cntr, 0] = rmse
+    msne_err[fold_cntr, 1] = mae
 
 
     fold_cntr += 1
@@ -219,9 +227,15 @@ tile2vec_err_mean = np.mean(tile2vec_err, axis=0)
 tile2vec_err_std = np.std(tile2vec_err, axis=0)
 results.append(['Tile2Vec', tile2vec_err_mean[0], tile2vec_err_std[0], tile2vec_err_mean[1], tile2vec_err_std[1]])
 
+msne_err_mean = np.mean(msne_err, axis=0)
+msne_err_std = np.std(msne_err, axis=0)
+results.append(['MSNE', msne_err_mean[0], msne_err_std[0], msne_err_mean[1], msne_err_std[1]])
+
 embed_err_mean = np.mean(embed_err, axis=0)
 embed_err_std = np.std(embed_err, axis=0)
 results.append(['RegionEncoder', embed_err_mean[0], embed_err_std[0], embed_err_mean[1], embed_err_std[1]])
+
+
 
 
 

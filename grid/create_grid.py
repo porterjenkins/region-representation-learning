@@ -3,9 +3,9 @@ import os
 import pickle
 import random
 import sys
-# this should add files properly
 from datetime import datetime
 
+# this should add files properly
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import get_config
 import numpy
@@ -13,6 +13,7 @@ import pandas
 from geopy.distance import distance
 from scipy import ndimage
 from scipy.spatial.distance import euclidean
+
 
 logging.basicConfig(filename='region.log', filemode='w', level=logging.INFO,
                     format='%(asctime)s %(message)s')
@@ -105,6 +106,13 @@ class RegionGrid:
         logging.warning("No Region Found")
         return None
 
+    def get_reverse_categories(self):
+        d = {}
+        for k, v in self.categories.items():
+            d[v] = k
+        return d
+
+
     @staticmethod
     def update_arr_two_dim_sampled(arr, regions, grid_partition_map):
         """
@@ -141,6 +149,26 @@ class RegionGrid:
         if "m" in price:
             return float(price[:price.index("m")]) * 1000000
         return float(price)
+
+    def get_taxi_trips(self, fname, city):
+        df = pandas.read_csv(fname)
+
+        if city == 'nyc':
+            loc_cols = ['pickup_latitude', 'pickup_longitude', 'dropoff_latitude', 'dropoff_longitude']
+        elif city == 'chicago':
+            loc_cols = ['Pickup Centroid Latitude', 'Pickup Centroid Longitude', 'Dropoff Centroid Latitude', 'Dropoff Centroid Longitude',]
+        else:
+            raise NotImplementedError("city must be 'chicago' or 'nyc' ")
+
+
+        print("Mapping taxi trips to regions")
+        for idx, row in df.iterrows():
+            print("--> progress: {:.4f}".format(idx / df.shape[0]), end='\r')
+            if row['pickup_region'] == row['dropoff_region']:
+                trip = row[loc_cols].values
+                r_coor = row['pickup_region']
+                r = self.regions[r_coor]
+                r.add_trip(trip)
 
     def load_housing_data(self, fname):
         df = pandas.read_csv(fname)
@@ -181,7 +209,7 @@ class RegionGrid:
         df['region_coor'] = reg_coor
         return df
 
-    def load_img_data(self, img_dims=(50, 50), std_img=True):
+    def load_img_data(self, img_dims=(50,50), std_img=True):
 
         idx_cntr = 0
         # init image tensor: n_samples x n_channels x n_rows x n_cols
@@ -388,7 +416,7 @@ class RegionGrid:
 
         return "{},{}".format(x_idx, y_idx)
 
-    def create_flow_matrix(self, fname, n_rows=None, region_name='chicago', time=None):
+    def create_flow_matrix(self, fname, n_rows=None, region_name='chicago', time=None, sample=False, p=.05):
         """
         Generated a weighted matrix (dims: n_regions x n_regions) from taxi flow data
          (https://data.cityofchicago.org/Transportation/Taxi-Trips/wrvz-psew)
@@ -422,14 +450,29 @@ class RegionGrid:
         else:
             raise NotImplementedError("Taxi trajectory parsing only implemented for 'chicago' and 'nyc'")
 
+
+        if sample:
+            sample_fname = "{}-{}".format(fname.split(".csv")[0], 'sampled.csv')
+            if os.path.exists(sample_fname):
+                os.remove(sample_fname)
+
+
+
         sample_cnt = 0
         row_cntr = 0
         with open(fname, 'r') as f:
             for row in f:
-                data = row.split(",")
+                data = row.strip().split(",")
 
                 if row_cntr == 0:
                     headers = data
+                    if sample:
+                        headers += ['pickup_region', 'dropoff_region']
+                        with open(sample_fname, 'a') as f:
+                            for item in headers:
+                                f.write("%s," % item)
+                            f.write("\n")
+
                 else:
                     try:
                         trip_pickup = (data[pickup_lat_idx], data[pickup_lon_idx])
@@ -456,6 +499,18 @@ class RegionGrid:
                             if sample_cnt % 100 == 0:
                                 print("{}, {} --> {}".format(sample_cnt, trip_pickup, trip_drop),
                                       end="\r")
+
+                            if sample:
+                                alpha = numpy.random.uniform(0, 1)
+                                if alpha < p:
+                                    with open(sample_fname, 'a') as f:
+                                        pickup_region = '"%s"' % pickup_region
+                                        drop_region = '"%s"' % drop_region
+                                        data += [pickup_region, drop_region]
+                                        for item in data:
+                                            f.write("%s," % item)
+                                        f.write("\n")
+
 
                             if n_rows is not None:
                                 if sample_cnt >= n_rows:
@@ -617,6 +672,7 @@ class Region:
         self.sat_img = numpy.array
         self.home_data = []
         self.traffic_data = []
+        self.trips = []
 
     def median_home_value(self):
         return numpy.median(self.home_data)
@@ -632,6 +688,9 @@ class Region:
 
     def add_home(self, home):
         self.home_data.append(home)
+
+    def add_trip(self, trip):
+        self.trips.append(trip)
 
     def add_traffic_volume(self, volume):
         self.traffic_data.append(volume)
@@ -717,20 +776,52 @@ class Region:
 
         return mid
 
+    def get_poi_poi_dist(self, cat_idx_map):
+        """
+        Get the POI-to-POI category istance matrix (network).
+            each element, ij, denotes the average distance in meters from POI category i to j
+        :param cat_idx_map: (dict) mapping from POI categories to matrix indices
+        :return: poi_poi_dist (np.array)
+        """
+        n_cat = len(cat_idx_map)
+
+        category_sum_mtx = numpy.zeros((n_cat, n_cat))
+        category_cnt_mtx = numpy.zeros((n_cat, n_cat))
+
+        for i, poi_i in enumerate(self.poi):
+            for j, poi_j in enumerate(self.poi):
+                point_i = (poi_i.location.lat, poi_i.location.lon)
+                point_j = (poi_j.location.lat, poi_j.location.lon)
+
+                idx_i = cat_idx_map[poi_i.cat]
+                idx_j = cat_idx_map[poi_j.cat]
+                d = distance(point_i, point_j).meters
+
+                category_sum_mtx[idx_i, idx_j] += d
+                category_cnt_mtx[idx_i, idx_j] += 1
+
+        poi_poi_dist = category_sum_mtx / category_cnt_mtx
+
+        return numpy.nan_to_num(poi_poi_dist, 0)
+
+    def get_poi_poi_mobility(self):
+        pass
+
 
 def get_images_for_grid(region_grid, clear_dir=False, compress=True):
     from image.image_retrieval import get_images_for_all_no_marker, compress_images
     get_images_for_all_no_marker(region_grid, clear_dir=clear_dir)
     if compress:
-        compress_images(region_grid.img_dir, resize=(50, 50))
+        compress_images(region_grid.img_dir, resize=(50,50))
 
 
 if __name__ == '__main__':
     c = get_config()
     region_grid = RegionGrid(config=c)
     tmp = region_grid.feature_matrix.sum(axis=1)
-    r = region_grid.regions['0,0']
-    print(r.compute_distances())
+
+
+
     # region_grid.load_img_data(std_img=True)
     region_grid.load_weighted_mtx()
     region_grid.load_housing_data(c['housing_data_file'])
