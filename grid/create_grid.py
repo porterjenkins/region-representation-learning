@@ -537,7 +537,6 @@ class RegionGrid:
         num_p_bucket = 24 / max_bucket
         import math
         x = math.floor(b / num_p_bucket)
-        print(f"time {b} to bucket {x}")
         return int(x)
 
     def get_mtx(self, fname):

@@ -22,7 +22,7 @@ def random_walk_distance(m, high, n_walks=10000, walk_length=8):
 
         walk_sequence = []
         for i in range(0, walk_length):
-            print(f"Walk {walk_num} - Step {i}")
+            print(f"Walk {walk_num} - Step {i}", end='\r')
             # start walk
             # sum of all distances
             distances = m[v]
@@ -34,7 +34,6 @@ def random_walk_distance(m, high, n_walks=10000, walk_length=8):
             # set this vertex to walk from
             v = walk
             walk_sequence.append(f"{v}")
-        print(walk_sequence)
         walks.append(walk_sequence)
     return walks
 
@@ -47,8 +46,7 @@ def random_walk_time(m, source_v, n_walks=10000, walk_length=8):
         v = numpy.random.choice(size=1, a=list(source_v))[0]
         walk_sequence = []
         for i in range(0, walk_length):
-            print(f"Walk {walk_num} - Step {i}")
-            print(f"Walking from {v}")
+            print(f"Walk {walk_num} - Step {i}", end='\r')
             # start walk
             # total counts for each time bucket
             sums = m[v].sum(axis=1)
@@ -62,7 +60,6 @@ def random_walk_time(m, source_v, n_walks=10000, walk_length=8):
                 walk_sequence.append(f"{v}")
             else:
                 walk_sequence.append(f"{v}")
-        print(walk_sequence)
         walks.append(walk_sequence)
     return walks
 
